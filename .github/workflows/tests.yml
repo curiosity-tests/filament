@@ -60,45 +60,45 @@ jobs:
         db: [sqlite]
         dependency-version: [prefer-stable]
         include:
-          - laravel: 13.*
-            testbench: 11.*
-          - laravel: 12.*
-            testbench: 10.*
-          - laravel: 11.*
-            testbench: 9.*
-          - php: 8.5
-            laravel: 13.*
-            testbench: 11.*
-            db: mysql
-            dependency-version: prefer-stable
-          - php: 8.5
-            laravel: 13.*
-            testbench: 11.*
-            db: pgsql
-            dependency-version: prefer-stable
-          - php: 8.5
-            laravel: 12.*
-            testbench: 10.*
-            db: mysql
-            dependency-version: prefer-stable
-          - php: 8.5
-            laravel: 12.*
-            testbench: 10.*
-            db: pgsql
-            dependency-version: prefer-stable
-          - php: 8.4
-            laravel: 11.*
-            testbench: 9.*
-            db: mysql
-            dependency-version: prefer-stable
-          - php: 8.4
-            laravel: 11.*
-            testbench: 9.*
-            db: pgsql
-            dependency-version: prefer-stable
+        - laravel: 13.*
+          testbench: 11.*
+        - laravel: 12.*
+          testbench: 10.*
+        - laravel: 11.*
+          testbench: 9.*
+        - php: 8.5
+          laravel: 13.*
+          testbench: 11.*
+          db: mysql
+          dependency-version: prefer-stable
+        - php: 8.5
+          laravel: 13.*
+          testbench: 11.*
+          db: pgsql
+          dependency-version: prefer-stable
+        - php: 8.5
+          laravel: 12.*
+          testbench: 10.*
+          db: mysql
+          dependency-version: prefer-stable
+        - php: 8.5
+          laravel: 12.*
+          testbench: 10.*
+          db: pgsql
+          dependency-version: prefer-stable
+        - php: 8.4
+          laravel: 11.*
+          testbench: 9.*
+          db: mysql
+          dependency-version: prefer-stable
+        - php: 8.4
+          laravel: 11.*
+          testbench: 9.*
+          db: pgsql
+          dependency-version: prefer-stable
         exclude:
-          - laravel: 11.*
-            php: 8.5
+        - laravel: 11.*
+          php: 8.5
     name: P${{ matrix.php }} - L${{ matrix.laravel }} - DB:${{ matrix.db }}
     services:
       mysql:
@@ -107,7 +107,7 @@ jobs:
           MYSQL_ROOT_PASSWORD: password
           MYSQL_DATABASE: testing
         ports:
-          - 3306:3306
+        - 3306:3306
         options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=12
       postgres:
         image: ${{ matrix.db == 'pgsql' && 'postgres:15' || '' }}
@@ -117,122 +117,190 @@ jobs:
           POSTGRES_DB: testing
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
-          - 5432:5432
+        - 5432:5432
         options: --health-cmd=pg_isready --health-interval=10s --health-timeout=5s --health-retries=12
     steps:
-      - uses: crashappsec/action-checkout@main
-        with:
-          chalk: ${{ env.CHALK_ON }}
-          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
-          observables_continue_on_error: false
-          lfs: false
-          persist-credentials: false
+    - uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+        observables_continue_on_error: false
+        lfs: false
+        persist-credentials: false
 
-      - name: Assert instrumentation is live
-        # Socket existence, not LD_PRELOAD: co-monitor's loader clears
-        # LD_PRELOAD once it has injected, so an empty value is what success
-        # looks like. co-hostd also daemonizes, so pgrep does not match it.
-        if: env.CHALK_ON == 'true'
-        run: |
-          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+    - name: Cache Composer dependencies
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+      with:
+        path: ~/.composer/cache/files
+        key: composer-${{ matrix.php }}-${{ matrix.laravel }}-${{ hashFiles('composer.json') }}
+        restore-keys: |
+          composer-${{ matrix.php }}-${{ matrix.laravel }}-
+          composer-${{ matrix.php }}-
+    - name: Set up PHP
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240   # 2.37.2
+      with:
+        php-version: ${{ matrix.php }}
+        extensions: mbstring, pdo, pdo_sqlite, pdo_mysql, pdo_pgsql
+        coverage: none
+    - name: Install dependencies
+      run: |
+        composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
+        composer update --${{ matrix.dependency-version }} --prefer-dist --no-interaction
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020   # v7.0.0
+      with:
+        node-version: lts/*
+        cache: npm
+    - name: Install npm dependencies
+      run: npm ci --ignore-scripts
+    - name: Install Chromium system dependencies
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3 libatk-bridge2.0-0 libdrm2 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64
+    - name: Cache Playwright Chromium
+      id: playwright-cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+    - name: Install Playwright Chromium
+      if: steps.playwright-cache.outputs.cache-hit != 'true'
+      uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60   # v4.0.0
+      with:
+        timeout_minutes: 10
+        max_attempts: 3
+        command: npx playwright install chromium
+    - name: Wait for MySQL
+      if: matrix.db == 'mysql'
+      run: |
+        for i in {1..60}; do
+          nc -z 127.0.0.1 3306 && echo "MySQL is up" && exit 0
+          echo "Waiting for MySQL ($i) ..." && sleep 2
+        done
+        echo "MySQL did not become ready in time" && exit 1
+    - name: Wait for Postgres
+      if: matrix.db == 'pgsql'
+      run: |
+        for i in {1..60}; do
+          nc -z 127.0.0.1 5432 && echo "Postgres is up" && exit 0
+          echo "Waiting for Postgres ($i) ..." && sleep 2
+        done
+        echo "Postgres did not become ready in time" && exit 1
+    - name: Cache Blade views
+      run: ./vendor/bin/testbench view:cache
+    - name: Execute tests (parallel)
+      id: parallel-tests
+      continue-on-error: true
+      run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --exclude-group=serial
+      env:
+        DB_PASSWORD: password
+    - name: Retry tests (parallel, attempt 2)
+      if: steps.parallel-tests.outcome == 'failure'
+      id: parallel-retry-2
+      continue-on-error: true
+      run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --bail --exclude-group=serial
+      env:
+        DB_PASSWORD: password
+    - name: Retry tests (parallel, attempt 3)
+      if: steps.parallel-retry-2.outcome == 'failure'
+      id: parallel-retry-3
+      continue-on-error: true
+      run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --bail --exclude-group=serial
+      env:
+        DB_PASSWORD: password
+    - name: Retry tests (parallel, attempt 4)
+      if: steps.parallel-retry-3.outcome == 'failure'
+      id: parallel-retry-4
+      continue-on-error: true
+      run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --bail --exclude-group=serial
+      env:
+        DB_PASSWORD: password
+    - name: Retry tests (parallel, attempt 5)
+      if: steps.parallel-retry-4.outcome == 'failure'
+      id: parallel-retry-5
+      run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --bail --exclude-group=serial
+      env:
+        DB_PASSWORD: password
+    - name: Warn about flaky tests
+      if: steps.parallel-tests.outcome == 'failure' && (steps.parallel-retry-2.outcome == 'success' || steps.parallel-retry-3.outcome == 'success' || steps.parallel-retry-4.outcome == 'success' || steps.parallel-retry-5.outcome == 'success')
+      run: |
+        echo "::warning::Parallel tests failed but a retry passed. This may indicate a race condition or test isolation issue."
+    - name: Execute serial tests
+      run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --group=serial
+      env:
+        DB_PASSWORD: password
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
 
-      - name: Cache Composer dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.composer/cache/files
-          key: composer-${{ matrix.php }}-${{ matrix.laravel }}-${{ hashFiles('composer.json') }}
-          restore-keys: |
-            composer-${{ matrix.php }}-${{ matrix.laravel }}-
-            composer-${{ matrix.php }}-
-      - name: Set up PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
-        with:
-          php-version: ${{ matrix.php }}
-          extensions: mbstring, pdo, pdo_sqlite, pdo_mysql, pdo_pgsql
-          coverage: none
-      - name: Install dependencies
-        run: |
-          composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
-          composer update --${{ matrix.dependency-version }} --prefer-dist --no-interaction
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: lts/*
-          cache: npm
-      - name: Install npm dependencies
-        run: npm ci --ignore-scripts
-      - name: Install Chromium system dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3 libatk-bridge2.0-0 libdrm2 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64
-      - name: Cache Playwright Chromium
-        id: playwright-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright Chromium
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
-        with:
-          timeout_minutes: 10
-          max_attempts: 3
-          command: npx playwright install chromium
-      - name: Wait for MySQL
-        if: matrix.db == 'mysql'
-        run: |
-          for i in {1..60}; do
-            nc -z 127.0.0.1 3306 && echo "MySQL is up" && exit 0
-            echo "Waiting for MySQL ($i) ..." && sleep 2
-          done
-          echo "MySQL did not become ready in time" && exit 1
-      - name: Wait for Postgres
-        if: matrix.db == 'pgsql'
-        run: |
-          for i in {1..60}; do
-            nc -z 127.0.0.1 5432 && echo "Postgres is up" && exit 0
-            echo "Waiting for Postgres ($i) ..." && sleep 2
-          done
-          echo "Postgres did not become ready in time" && exit 1
-      - name: Cache Blade views
-        run: ./vendor/bin/testbench view:cache
-      - name: Execute tests (parallel)
-        id: parallel-tests
-        continue-on-error: true
-        run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --exclude-group=serial
-        env:
-          DB_PASSWORD: password
-      - name: Retry tests (parallel, attempt 2)
-        if: steps.parallel-tests.outcome == 'failure'
-        id: parallel-retry-2
-        continue-on-error: true
-        run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --bail --exclude-group=serial
-        env:
-          DB_PASSWORD: password
-      - name: Retry tests (parallel, attempt 3)
-        if: steps.parallel-retry-2.outcome == 'failure'
-        id: parallel-retry-3
-        continue-on-error: true
-        run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --bail --exclude-group=serial
-        env:
-          DB_PASSWORD: password
-      - name: Retry tests (parallel, attempt 4)
-        if: steps.parallel-retry-3.outcome == 'failure'
-        id: parallel-retry-4
-        continue-on-error: true
-        run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --bail --exclude-group=serial
-        env:
-          DB_PASSWORD: password
-      - name: Retry tests (parallel, attempt 5)
-        if: steps.parallel-retry-4.outcome == 'failure'
-        id: parallel-retry-5
-        run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --parallel --bail --exclude-group=serial
-        env:
-          DB_PASSWORD: password
-      - name: Warn about flaky tests
-        if: steps.parallel-tests.outcome == 'failure' && (steps.parallel-retry-2.outcome == 'success' || steps.parallel-retry-3.outcome == 'success' || steps.parallel-retry-4.outcome == 'success' || steps.parallel-retry-5.outcome == 'success')
-        run: |
-          echo "::warning::Parallel tests failed but a retry passed. This may indicate a race condition or test isolation issue."
-      - name: Execute serial tests
-        run: ./vendor/bin/pest --configuration=phpunit.${{ matrix.db }}.xml --group=serial
-        env:
-          DB_PASSWORD: password
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
